@@ -1,53 +1,102 @@
 const express = require('express')
-const userRouter = express.Router()
+const fs = require('fs')
+const { userModel } = require('../model/user.model')
 const bcrypt = require('bcrypt');
-const { userModel } = require('../model/user.model');
+const userRoute = express.Router()
 var jwt = require('jsonwebtoken');
+require('dotenv').config()
 
 
-
-userRouter.post("/register", async (req, res) => {
-    const { name, email, gender, password, city, age } = req.body
+userRoute.post("/signup", async (req, res) => {
     try {
-        bcrypt.hash(password, 5, async function (err, hash) {
-            // Store hash in your password DB.
-            if (err) res.send({ "msg": "Something went wrong" })
-            else {
-                const user = new userModel({ name, email, gender, city, age, password: hash })
-                await user.save()
-                res.send({ msg: "User Register successfully" })
-            }
-        });
+        const { name, email, password, role } = req.body
+        const IsUserPresent = await userModel.findOne({ email })
+        if (IsUserPresent) {
+            return res.send({ msg: 'Please Login,User Already Present' })
+        }
 
+        const hash = await bcrypt.hashSync(password, 8)
+        const newUser = new userModel({ name, email, password: hash, role })
+        await newUser.save()
+        res.send({ msg: 'Signup Successful' })
     } catch (error) {
-        res.status(400).send({ msg: "Registration Failed", error: error.message })
+        res.send(error.message)
     }
-
 })
 
-
-userRouter.post("/login", async (req, res) => {
-    const { email, password } = req.body
+userRoute.post("/login", async (req, res) => {
     try {
-        const user = await userModel.find({ email })
-        if (user.length > 0) {
-            bcrypt.compare(password, user[0].password, function (err, result) {
-                // result == true
-                if (result) {
-                    var token = jwt.sign({ userID: user[0]._id }, 'ans');
-                    res.send({ msg: "Login Successful", "token": token })
-                } else {
-                    res.send({ msg: "wrong password or id" })
-                }
-            });
-        } else {
-            res.send({ msg: "Login Failed" })
+        const { email, password } = req.body
+        if (!email || !password) {
+            return res.status(401).send({ msg: "Please provide a valid Email or Password" })
         }
+
+        const IsUserPresent = await userModel.findOne({ email })
+        if (!IsUserPresent) {
+            return res.send({ msg: "User not Present , please Register first" })
+        }
+
+        const IsPasswordCorrect = await bcrypt.compareSync(password, IsUserPresent.password)
+
+        if (!IsPasswordCorrect) {
+            return res.send({ msg: "Wrong Password" })
+        }
+
+        const token = await jwt.sign({ email, userId: IsUserPresent._id, role: IsUserPresent.role },
+            process.env.JWT_SECRET_KEY,
+            { expiresIn: "10m" }
+        )
+
+        const refreshToken = await jwt.sign(
+            { email, userId: IsUserPresent._id },
+            process.env.REFRESH_TOKEN,
+            { expiresIn: "15m" }
+        )
+
+        res.send({ msg: "Login Successful", token, refreshToken })
     } catch (error) {
-        res.status(400).send({ msg: "Login Failed", error: error.message })
+        res.send(error.message)
+    }
+})
+
+userRoute.get("/getToken", async (req, res) => {
+    try {
+        const refreshToken = req.header.authorization
+        if (!refreshToken) {
+            return res.send({ msg: "Please Login Again" })
+        }
+        jwt.verify(refreshToken, process.env.REFRESH_TOKEN, (err, decoded) => {
+            if (err) {
+                return res.send({ msg: "Please Login Again" })
+            } else {
+                const token = jwt.sign(
+                    { userId: decoded.userId, email: decoded.email },
+                    process.env.JWT_SECRET_KEY,
+                    { expiresIn: "3m" }
+                )
+                res.send({ msg: "Login Successful", token })
+            }
+        })
+    } catch (error) {
+        res.send(error.message)
+    }
+})
+
+userRoute.get("/logout", async (req, res) => {
+    try {
+        const token = req.headers.authorization
+        // const token = req.headers.authorization.split(" ")[1]
+        const blacklistData = JSON.parse(
+            fs.readFileSync("./blacklist.json", "utf-8")
+        )
+        blacklistData.push(token)
+        fs.writeFileSync("./blacklist.json", JSON.stringify(blacklistData))
+        res.send({ msg: "Logout Successful" })
+    } catch (error) {
+        res.send(error.message)
     }
 })
 
 module.exports = {
-    userRouter
+    userRoute
 }
